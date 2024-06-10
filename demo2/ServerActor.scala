@@ -1,44 +1,59 @@
-package demo2
+package ChatBot
 
-import akka.actor.typed.scaladsl.Behaviors
-import akka.actor.typed.{ActorRef, Behavior}
+import akka.actor.{Actor, ActorRef, Props, Terminated}
+import scala.collection.mutable
 
-sealed trait ServerMessage
-case class ClientConnected(name: String, clientActor: ActorRef[ClientMessage]) extends ServerMessage
-case class Broadcast(message: String) extends ServerMessage
-case class PrivateMessage(receiver: String, message: String) extends ServerMessage
-case class ClientDisconnected(name: String) extends ServerMessage
+case class ClientConnected(name: String, clientActor: ActorRef)
+case class BroadcastMessage(message: String, from: String)
+case class PrivateMessage(from: String, to: String, message: String)
+case class ClientDisconnected(name: String)
 
-object ServerActor {
-  def apply(): Behavior[ServerMessage] = Behaviors.setup { context =>
+class ServerActor extends Actor {
+  private val clients = mutable.Map.empty[String, ActorRef]
 
-    var clients = Map.empty[String, ActorRef[ClientMessage]]
+  override def receive: Receive = {
+    case ClientConnected(name, clientActor) =>
+      context.watch(clientActor)
+      clients += (name -> clientActor)
+      sendClientList()
+      notifyClients(name, s"Client $name connected")
+      println(s"Client $name connected")
 
-    Behaviors.receiveMessage {
-      case ClientConnected(name, clientActor) =>
-        context.log.info(s"Client $name connected")
-        clients += name -> clientActor
-        clients.values.foreach(_ ! ClientList(clients.keys.toList))
-        Behaviors.same
+    case BroadcastMessage(message, from) =>
+      clients.values.foreach(_ ! MessageReceived(from, message))
+      println(s"Broadcast message from $from: $message")
 
-      case Broadcast(message) =>
-        context.log.info(s"Broadcasting message $message to all")
-        clients.values.foreach(_ ! MessageReceived("Server", message))
-        Behaviors.same
+    case PrivateMessage(from, to, message) =>
+      clients.get(to) match {
+        case Some(client) =>
+          client ! MessageReceived(from, message)
+          println(s"Private message from $from to $to: $message")
+        case None =>
+          println(s"Client $to not found")
+      }
 
-      case PrivateMessage(receiver, message) =>
-        context.log.info(s"Sending private message $message to $receiver")
-        clients.get(receiver) match {
-          case Some(client) => client ! MessageReceived("Server", message)
-          case None => context.log.info(s"Client $receiver Not Found")
-        }
-        Behaviors.same
+    case ClientDisconnected(name) =>
+      clients -= name
+      sendClientList()
+      notifyClients(name, s"Client $name disconnected")
+      println(s"Client $name disconnected")
 
-      case ClientDisconnected(name) =>
-        context.log.info(s"Client $name disconnected...")
-        clients -= name
-        clients.values.foreach(_ ! ClientList(clients.keys.toList))
-        Behaviors.same
+  }
+
+  private def sendClientList(): Unit = {
+    val clientList = clients.keys.toList
+    clients.values.foreach(_ ! ClientList(clientList))
+  }
+
+  private def notifyClients(sender: String, notification: String): Unit = {
+    for(name <- clients.keys) {
+      if (sender != name) {
+        clients.values.foreach(_ ! ClientNotification(notification))
+      }
     }
   }
+}
+
+object ServerActor {
+  def props: Props = Props[ServerActor]()
 }

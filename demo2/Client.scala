@@ -1,87 +1,92 @@
-package demo2
+package ChatBot
 
-import akka.actor.typed.{ActorRef, ActorSystem}
-import akka.actor.typed.scaladsl.Behaviors
+import akka.actor.{ActorSystem, Props, ActorRef}
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model.ws.{Message, TextMessage, WebSocketRequest}
-import akka.stream.{Materializer, OverflowStrategy}
-import akka.stream.scaladsl.{Flow, Sink, Source}
+import akka.stream.{ActorMaterializer, OverflowStrategy}
+import akka.stream.scaladsl.{Flow, Keep, Sink, Source}
+import scala.concurrent.ExecutionContextExecutor
 import scala.io.StdIn
+import scala.util.{Failure, Success}
 import scala.concurrent.duration._
 
 object Client {
-
   def main(args: Array[String]): Unit = {
+    implicit val system: ActorSystem = ActorSystem("ChatClient")
+    implicit val materializer: ActorMaterializer = ActorMaterializer()
+    implicit val ec: ExecutionContextExecutor = system.dispatcher
 
-    implicit val Clientsystem: ActorSystem[ClientMessage] = ActorSystem(ClientActor(), "ChatClient")
-    val Serversystem: ActorSystem[ServerMessage] = ActorSystem(ServerActor(), "ChatServer")
-    implicit val executionContext = Clientsystem.executionContext
-    implicit val materializer: Materializer = Materializer(Clientsystem)
+    println("Enter your name:")
+    val name = StdIn.readLine()
 
-    val serverUri = "ws://localhost:8080/ws-chat"
+    val clientActor = system.actorOf(ClientActor.props(name), s"clientActor_$name")
 
-    val clientActor = Clientsystem.systemActorOf(ClientActor(), "clientActor")
+    val serverUri = s"ws://localhost:8080/ws-chat/$name"
+    val outgoingMessages: Source[Message, ActorRef] = Source.actorRef[String](10, OverflowStrategy.fail)
+      .mapMaterializedValue { outActor =>
+        system.scheduler.scheduleAtFixedRate(2.seconds, 2.seconds)(() => {
+          println("Choose an option: [1] Broadcast [2] Private Message [3] Exit")
+          StdIn.readLine() match {
+            case "1" =>
+              println("Enter broadcast message:")
+              val message = StdIn.readLine()
+              outActor ! s"broadcast:$message"
 
-    val incomingMessages: Sink[Message, Any] =
-      Flow[Message].collect {
-        case TextMessage.Strict(text) =>
-          text
-      }.to(Sink.onComplete( _ =>
-        Clientsystem ! MessageReceived("Server", "Connection Closed")))
+            case "2" =>
+              println("Enter recipient:")
+              val recipient = StdIn.readLine()
+              println("Enter private message:")
+              val message = StdIn.readLine()
+              outActor ! s"private:$recipient:$message"
 
-    val outgoingMessages: Source[Message, Any] =
-      Source.actorRef[String](bufferSize = 10, OverflowStrategy.fail).mapMaterializedValue {
-        outgoingActor =>
-          println("Enter client name : ")
-          val clientName = StdIn.readLine()
-          val updatedClientName = clientName + "test"
-          Serversystem ! ClientConnected(updatedClientName, clientActor)
-          Clientsystem.scheduler.scheduleAtFixedRate(2.seconds, 2.seconds) { () =>
-            println("Choose 1. Broadcast 2. Private 3. Exit")
-            StdIn.readLine() match {
-              case "1" =>
-                println("Enter broadcast message : ")
-                val message = StdIn.readLine()
-                outgoingActor ! s"broadcast:$message"
+            case "3" =>
+              outActor ! "ClientDisconnected"
+              system.terminate()
+              return
 
-              case "2" =>
-                println("Enter receiver : ")
-                val receiver = StdIn.readLine()
-                println("Enter private message : ")
-                val message = StdIn.readLine()
-                outgoingActor ! s"private:$receiver:$message"
-
-              case "3" =>
-                Clientsystem.terminate()
-                return
-
-              case _ =>
-                println("Invalid option")
-            }
+            case _ =>
+              println("Invalid option, try again.")
           }
-          outgoingActor
-      }.map { msg =>
-        TextMessage(msg)
+        })(ec)
+        outActor
       }
+      .map { msg => TextMessage(msg) }
 
-    val webSocketFlow = Flow.fromSinkAndSource(incomingMessages, outgoingMessages)
-
-    val (upgradeResponse, closed) =
-      Http().singleWebSocketRequest(WebSocketRequest(serverUri), webSocketFlow)
-
-    val connected = upgradeResponse.map { upgrade =>
-      if (upgrade.response.status == akka.http.scaladsl.model.StatusCodes.SwitchingProtocols) {
-        println("Connected to Server")
-        Behaviors.empty
-      }
-      else {
-        throw new RuntimeException(s"Connection failed : ${upgrade.response.status}")
-      }
+    val incomingMessages: Sink[Message, Any] = Sink.foreach {
+      case TextMessage.Strict(text) => clientActor ! parseIncomingMessage(text)
+      case _ =>
     }
 
-    connected.onComplete(_ => println("Type messages to send to the Server, Type 'exit' to exit"))
+    val webSocketFlow = Http().webSocketClientFlow(WebSocketRequest(serverUri))
 
-    StdIn.readLine()
-    Clientsystem.terminate()
+    val (upgradeResponse, closed) =
+      outgoingMessages
+        .viaMat(webSocketFlow)(Keep.right)
+        .toMat(incomingMessages)(Keep.both)
+        .run()
+
+    upgradeResponse.onComplete {
+      case Success(upgrade) if upgrade.response.status == akka.http.scaladsl.model.StatusCodes.SwitchingProtocols =>
+        println("Connected to chat server")
+
+      case Success(upgrade) =>
+        println(s"Connection failed: ${upgrade.response.status}")
+
+      case Failure(exception) =>
+        println(s"Connection failed: $exception")
+    }
+
+    //    closed.foreach(_ => system.terminate())
+  }
+
+  def parseIncomingMessage(text: String): Any = {
+    if (text.startsWith("Clients: ")) {
+      ClientList(text.stripPrefix("Clients: ").split(", ").toList)
+    } else if (text.contains(": ")) {
+      val Array(from, msg) = text.split(": ", 2)
+      MessageReceived(from, msg)
+    } else {
+      ClientNotification(text)
+    }
   }
 }

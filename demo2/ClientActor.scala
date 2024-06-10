@@ -1,21 +1,28 @@
-package demo2
+package ChatBot
 
-import akka.actor.typed.Behavior
-import akka.actor.typed.scaladsl.Behaviors
+import akka.actor.{Actor, Props}
 
+case class MessageReceived(from: String, message: String)
+case class ClientList(clients: List[String])
+case class ClientNotification(message: String)
 
-sealed trait ClientMessage
-case class MessageReceived(from: String, message: String) extends ClientMessage
-case class ClientList(clients: List[String]) extends ClientMessage
-
-object ClientActor {
-  def apply(): Behavior[ClientMessage] = Behaviors.receiveMessage {
+class ClientActor(name: String) extends Actor {
+  override def receive: Receive = {
     case MessageReceived(from, message) =>
-      println(s"message $message from $from")
-      Behaviors.same
+      println(s"$from: $message")
 
     case ClientList(clients) =>
-      println(s"Connected Clients : ${clients.mkString(", ")}")
-      Behaviors.same
+      println(s"Connected clients: ${clients.mkString(", ")}")
+
+    case ClientNotification(message) =>
+      println(message)
+
+    case msg =>
+      println(s"Unknown message: $msg")
   }
 }
+
+object ClientActor {
+  def props(name: String): Props = Props(new ClientActor(name))
+}
+
