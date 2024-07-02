@@ -16,7 +16,7 @@ class ServerActor extends Actor {
       context.watch(clientActor)
       clients += (name -> clientActor)
       sendClientList()
-      notifyClients(name, s"Client $name connected")
+      notifyClients(s"Client $name connected")
       println(s"Client $name connected")
 
     case BroadcastMessage(message, from) =>
@@ -33,11 +33,27 @@ class ServerActor extends Actor {
       }
 
     case ClientDisconnected(name) =>
+      clients.get(name).foreach(context.unwatch)
       clients -= name
       sendClientList()
-      notifyClients(name, s"Client $name disconnected")
+      notifyClients(s"Client $name disconnected")
       println(s"Client $name disconnected")
 
+    case Terminated(clientActor) =>
+      context.unwatch(clientActor)
+      val nameOption = clients.collectFirst {
+        case (name, actor) if actor == clientActor => name
+      }
+      nameOption.foreach { name =>
+        clients -= name
+        sendClientList()
+        notifyClients(s"Client $name disconnected")
+        println(s"Client $name disconnected")
+      }
+      if (clients.isEmpty) {
+        context.system.terminate()
+        println("No clients connected. Shutting down server.")
+      }
   }
 
   private def sendClientList(): Unit = {
@@ -45,12 +61,8 @@ class ServerActor extends Actor {
     clients.values.foreach(_ ! ClientList(clientList))
   }
 
-  private def notifyClients(sender: String, notification: String): Unit = {
-    for(name <- clients.keys) {
-      if (sender != name) {
-        clients.values.foreach(_ ! ClientNotification(notification))
-      }
-    }
+  private def notifyClients(notification: String): Unit = {
+    clients.values.foreach(_ ! ClientNotification(notification))
   }
 }
 

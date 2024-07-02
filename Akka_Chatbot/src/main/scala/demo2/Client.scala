@@ -76,7 +76,8 @@ object Client {
         println(s"Connection failed: $exception")
     }
 
-    //    closed.foreach(_ => system.terminate())
+    if(closed.equals(true))
+      system.terminate()
   }
 
   def parseIncomingMessage(text: String): Any = {

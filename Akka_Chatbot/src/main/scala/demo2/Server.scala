@@ -1,6 +1,6 @@
 package demo2
 
-import akka.actor.{ActorSystem, Props, ActorRef}
+import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model.ws.{Message, TextMessage}
 import akka.stream.{ActorMaterializer, OverflowStrategy}
@@ -23,7 +23,7 @@ object Server {
     }
 
     val bindingFuture = Http().newServerAt("localhost", 8081).bind(route)
-    println(s"Server online at http://localhost:8081/ws-chat/{name}\nPress RETURN to stop...")
+    println(s"Server online at http://localhost:8081/ws-chat/{name}")
     StdIn.readLine()
     bindingFuture.flatMap(_.unbind()).onComplete(_ => system.terminate())
   }
